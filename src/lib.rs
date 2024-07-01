@@ -120,13 +120,13 @@ pub enum PanicCause {
     /// Panic due to a user trap
     UserTrap,
 
-    /// Panic early in boot
+    /// Panic very early in boot
     EarlyBoot,
 
-    /// XXX
+    /// Panic early in boot due to call to prom_panic()
     EarlyBootPROM,
 
-    /// XXX
+    /// Panic early in boot due to unexpected trap
     EarlyBootTrap,
 
     /// Panic early in boot due to unknown cause because of missing LSB
@@ -361,13 +361,9 @@ struct IpccPanicDataV2 {
 // things get a bit grotty, because not only do we need to reconstruct the
 // missing `ipd_cause` byte (which we cannot do perfectly, but will come close
 // enough, especially when coupled with the panic message), but we also need
-// to infer the version of the structure.  We do this XXX at.  For this,
+// to infer the version of the structure.
 //
 fn fix_panic_data(d: Vec<u8>) -> Result<(PanicDataVersion, Vec<u8>)> {
-    if !d.iter().any(|&s| s != 0) {
-        bail!("panic information is empty");
-    }
-
     //
     // In some cases, `ipd_cause` is unambiguous based on the first byte;
     // otherwise, we populate a generic value.
@@ -519,8 +515,9 @@ impl PanicData {
 
             //
             // We set the registers in the same order in which they are displayed in
-            // dumpregs() in the operating system to allow for software that just
-            // wants to display them to be XXX
+            // dumpregs() in the operating system, allowing for software that just
+            // wants to display them to be able to iterate over them and get
+            // sufficiently familiar output.
             //
             register!(rdi);
             register!(rsi);
@@ -583,14 +580,18 @@ impl PanicData {
         })
     }
 
-    pub fn from_bytes(d: Vec<u8>) -> Result<Self> {
-        let (version, data) = fix_panic_data(d)?;
+    pub fn from_bytes(d: Vec<u8>) -> Result<Option<Self>> {
+        if !d.iter().any(|&s| s != 0) {
+            Ok(None)
+        } else {
+            let (version, data) = fix_panic_data(d)?;
 
-        match version.number() {
-            1 => Self::from_v1(version, data),
-            2 => Self::from_v2(version, data),
-            n => {
-                bail!("unsupported IPCC panic data version: {n}");
+            match version.number() {
+                1 => Ok(Some(Self::from_v1(version, data)?)),
+                2 => Ok(Some(Self::from_v2(version, data)?)),
+                n => {
+                    bail!("unsupported IPCC panic data version: {n}");
+                }
             }
         }
     }
