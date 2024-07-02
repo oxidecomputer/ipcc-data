@@ -4,11 +4,14 @@
 
 //! ipcc-data
 //!
-//! This is a crate to allow for the interpretation of data payloads over
-//! the inter-processor communications channel (IPCC).  (See RFD 316 for details
-//! of this channel and its mechanics.)  This crate is not a `no-std` crate, as
-//! it is not designed to be used by the SP, but rather in higher level software
-//! that must interpret IPCC data payloads.
+//! This is a crate to allow for the interpretation of data payloads over the
+//! inter-processor communications channel (IPCC) that are opaque to the SP.
+//! (See RFD 316 for details of this channel and its mechanics.)  Note that
+//! because this crate is designed only for those payloads that are opaque to
+//! the SP (e.g., HSSBootFail, HSSPanic), it is not a `no-std` crate:  it is
+//! designed to be used not by the SP, but rather in higher level software
+//! that must interpret IPCC data payloads (e.g., the control plane and
+//! Humility).
 //!
 
 use anyhow::{bail, Context, Result};
@@ -17,7 +20,7 @@ use binrw::{io::Cursor, BinRead};
 use derive_more::{Display, LowerHex};
 use indexmap::IndexMap;
 use std::convert::{TryFrom, TryInto};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 #[derive(Debug)]
 pub enum PanicDataVersion {
@@ -49,10 +52,20 @@ impl std::fmt::Display for PanicDataVersion {
 }
 
 #[derive(Debug, Display)]
-pub struct Cpuid(u32);
+pub struct Cpuid(pub u32);
 
 #[derive(Debug, Display, LowerHex)]
-pub struct Addr(u64);
+pub struct Addr(pub u64);
+
+#[derive(Debug)]
+pub struct AdjustedTime {
+    pub sec: u64,
+    pub nsec: u32,
+    pub system_time: SystemTime,
+}
+
+#[derive(Debug, Display)]
+pub struct MonotonicNanoseconds(pub u64);
 
 #[derive(Debug)]
 pub struct StackFrame {
@@ -185,10 +198,10 @@ pub struct PanicData {
     pub cpuid: Cpuid,
 
     /// panic non-monotonic time (nanoseconds since boot), if present
-    pub hrtime: Option<u64>,
+    pub hrtime: Option<MonotonicNanoseconds>,
 
     /// panic adjusted time (time since epoch), if present
-    pub time: Option<std::time::SystemTime>,
+    pub time: Option<AdjustedTime>,
 
     /// address of panicking thread
     pub thread: Addr,
@@ -551,24 +564,25 @@ impl PanicData {
             None
         };
 
+        let nsec: u32 = match p.hrestime.tv_nsec.try_into() {
+            Ok(nsec) => nsec,
+            Err(_) => {
+                bail!("illegal nsec value {:?}", p.hrestime);
+            }
+        };
+
         Ok(Self {
             version,
             cause,
             error_code: p.error,
             cpuid: Cpuid(p.cpuid),
-            hrtime: Some(p.hrtime),
-            time: Some(
-                std::time::UNIX_EPOCH
-                    + Duration::new(
-                        p.hrestime.tv_sec,
-                        match p.hrestime.tv_nsec.try_into() {
-                            Ok(nsec) => nsec,
-                            Err(_) => {
-                                bail!("illegal nsec value {:?}", p.hrestime);
-                            }
-                        },
-                    ),
-            ),
+            hrtime: Some(MonotonicNanoseconds(p.hrtime)),
+            time: Some(AdjustedTime {
+                sec: p.hrestime.tv_sec,
+                nsec,
+                system_time: std::time::UNIX_EPOCH
+                    + Duration::new(p.hrestime.tv_sec, nsec),
+            }),
             thread: Addr(p.thread),
             addr: Addr(p.addr),
             pc: Addr(p.pc),
