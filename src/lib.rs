@@ -4,14 +4,19 @@
 
 //! ipcc-data
 //!
-//! This is a crate to allow for the interpretation of data payloads over the
-//! inter-processor communications channel (IPCC) that are opaque to the SP.
-//! (See RFD 316 for details of this channel and its mechanics.)  Note that
-//! because this crate is designed only for those payloads that are opaque to
-//! the SP (e.g., HSSBootFail, HSSPanic), it is not a `no-std` crate:  it is
-//! designed to be used not by the SP, but rather in higher level software
-//! that must interpret IPCC data payloads (e.g., the control plane and
-//! Humility).
+//! This is a crate to allow for the interpretation of SP-opaque data payloads
+//! over the inter-processor communications channel (IPCC).  (See [RFD 316]
+//! for details of this channel and its mechanics.) Because this crate is
+//! designed *only* for those payloads that are opaque to the SP (e.g.,
+//! `HSSBootFail`, `HSSPanic`), it is not a `no-std` crate:  it is not
+//! designed to be used *in situ* by the SP, but rather in higher level
+//! software that must interpret IPCC data payloads -- which is to say, the
+//! control plane and [Humility].  For the host-side definitions of the IPCC
+//! payloads that this crate interprets, see [`kernel_ipcc.h`].
+//!
+//! [RFD 316]: https://rfd.shared.oxide.computer/rfd/0316
+//! [Humility]: https://github.com/oxidecomputer/humility
+//! [`kernel_ipcc.h`]: https://github.com/oxidecomputer/illumos-gate/blob/stlouis/usr/src/uts/oxide/sys/kernel_ipcc.h
 //!
 
 use anyhow::{bail, Context, Result};
@@ -20,11 +25,19 @@ use binrw::{io::Cursor, BinRead};
 use derive_more::{Display, LowerHex};
 use indexmap::IndexMap;
 use std::convert::{TryFrom, TryInto};
-use std::time::{Duration, SystemTime};
 
+/// The version of the IPCC panic data -- and an indicator of whether this
+/// version was able to be determined from the data directly, or had to be
+/// inferred due to the presence of [hubris#1554].
+///
+/// [hubris#1554]: https://github.com/oxidecomputer/hubris/issues/1554
+///
 #[derive(Debug)]
 pub enum PanicDataVersion {
+    /// Version was determined
     Determined(u8),
+
+    /// Version had to be inferred
     Inferred(u8),
 }
 
@@ -51,29 +64,45 @@ impl std::fmt::Display for PanicDataVersion {
     }
 }
 
+/// A host CPU identifier
 #[derive(Debug, Display)]
 pub struct Cpuid(pub u32);
 
+/// A host CPU memory address
 #[derive(Debug, Display, LowerHex)]
 pub struct Addr(pub u64);
 
+/// Host time, in adjusted time (that is, seconds and nanoseconds since the
+/// Epoch). Note that if this was gathered during boot, its correctness with
+/// respect to true wall time will depend on when it was gathered:  if very
+/// early in boot, it will be in 1970; if less early but still before any time
+/// synchronization has started, it will be like an aging X'er: trapped in the
+/// 1980s.
 #[derive(Debug)]
 pub struct AdjustedTime {
     pub sec: u64,
     pub nsec: u32,
-    pub system_time: SystemTime,
 }
 
+/// Host time, in monotonically increasing nanoseconds.
 #[derive(Debug, Display)]
 pub struct MonotonicNanoseconds(pub u64);
 
+/// A stack frame, consisting of a program text address of the caller.  This
+/// is also expressed as a symbol and offset, if present.
 #[derive(Debug)]
 pub struct StackFrame {
+    /// Address of caller
     pub address: Addr,
-    pub offset: u64,
+
+    /// Symbol of caller, if known
     pub symbol: Option<String>,
+
+    /// Offset from symbol
+    pub offset: u64,
 }
 
+/// A host register (presuming an AMD64 host).
 #[derive(Debug, Hash, Eq, PartialEq, Display)]
 #[allow(non_camel_case_types)]
 pub enum Register {
@@ -122,6 +151,7 @@ impl std::fmt::Display for StackFrame {
     }
 }
 
+/// The cause of a panic.
 #[derive(Debug, PartialEq)]
 pub enum PanicCause {
     /// Explicit call to panic
@@ -183,6 +213,12 @@ impl std::fmt::Display for PanicCause {
     }
 }
 
+/// Host panic data, the payload that corresponds to `HSSPanic` as described
+/// in [RFD 316] and implemented in [`kernel_ipcc.h`].
+///
+/// [RFD 316]: https://rfd.shared.oxide.computer/rfd/0316
+/// [`kernel_ipcc.h`]: https://github.com/oxidecomputer/illumos-gate/blob/stlouis/usr/src/uts/oxide/sys/kernel_ipcc.h
+///
 #[derive(Debug)]
 pub struct PanicData {
     /// version of panic data
@@ -580,8 +616,6 @@ impl PanicData {
             time: Some(AdjustedTime {
                 sec: p.hrestime.tv_sec,
                 nsec,
-                system_time: std::time::UNIX_EPOCH
-                    + Duration::new(p.hrestime.tv_sec, nsec),
             }),
             thread: Addr(p.thread),
             addr: Addr(p.addr),
@@ -594,6 +628,14 @@ impl PanicData {
         })
     }
 
+    /// Infer an IPCC data payload to be `HSSPanic`, creating [`PanicData`]
+    /// from received bytes.  This implementation will work around
+    /// any presence of [hubris#1554]; the returned [`PanicDataVersion`] will
+    /// indicate if the version was able to be determined or had to
+    /// be inferred.
+    ///
+    /// [hubris#1554]: https://github.com/oxidecomputer/hubris/issues/1554
+    ///
     pub fn from_bytes(d: Vec<u8>) -> Result<Option<Self>> {
         if !d.iter().any(|&s| s != 0) {
             Ok(None)
