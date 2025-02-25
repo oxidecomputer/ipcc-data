@@ -1,0 +1,12 @@
+[package]
+name = "faux-ipcc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.31", features = ["derive", "env"] }
+serialport = { version = "4.7.0", default-features = false }
+
+host-sp-messages = { git = "https://github.com/oxidecomputer/hubris" }
+attest-data = { git = "https://github.com/oxidecomputer/dice-util" }
+corncobs = "0.1.3"
