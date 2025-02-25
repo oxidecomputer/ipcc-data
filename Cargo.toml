@@ -1,10 +1,9 @@
-[package]
-name = "ipcc-data"
-version = "0.0.1"
-edition = "2018"
+[workspace]
+members = [
+    "ipcc-data",
+]
 
-[dependencies]
-anyhow = "1.0.44"
-derive_more = "0.99.0"
-binrw = "0.14.0"
-indexmap = "2.2.6"
+default-members = [
+    "ipcc-data",
+]
+resolver = "2"
