@@ -1,7 +1,10 @@
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use core::time::Duration;
 use serialport::{DataBits, FlowControl, Parity, StopBits};
-use std::path::PathBuf;
+use slog::{debug, info, o, trace, warn, Drain, Level, Logger};
+use slog_async::AsyncGuard;
+use std::path::{Path, PathBuf};
 
 use attest_data::messages::{HostToRotCommand, RotToHost};
 use host_sp_messages::{
@@ -19,20 +22,84 @@ pub enum Command {
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
+    /// Path to the serial port
+    #[clap(long, env)]
+    port: PathBuf,
+
+    /// Log level
+    #[clap(value_enum, short, long, default_value_t = LogLevel::Info)]
+    log_level: LogLevel,
+
+    /// Write logs to a file instead of stderr.
+    #[clap(long)]
+    logfile: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
-
-    #[clap(long, env)]
-    out: PathBuf,
-
-    #[clap(long)]
-    emit_cmd: bool,
 }
 
-fn main() {
-    let args = Args::parse();
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warning,
+    Error,
+    Critical,
+}
 
-    let mut port = serialport::new("/dev/ttyUSB1", 3_000_000)
+impl From<LogLevel> for Level {
+    fn from(value: LogLevel) -> Self {
+        match value {
+            LogLevel::Trace => Level::Trace,
+            LogLevel::Debug => Level::Debug,
+            LogLevel::Info => Level::Info,
+            LogLevel::Warning => Level::Warning,
+            LogLevel::Error => Level::Error,
+            LogLevel::Critical => Level::Critical,
+        }
+    }
+}
+
+fn build_logger(
+    level: Level,
+    path: Option<&Path>,
+) -> Result<(Logger, AsyncGuard)> {
+    fn make_drain<D: slog_term::Decorator + Send + 'static>(
+        level: Level,
+        decorator: D,
+    ) -> (slog::Fuse<slog_async::Async>, AsyncGuard) {
+        let drain = slog_term::FullFormat::new(decorator)
+            .build()
+            .filter_level(level)
+            .fuse();
+        let (drain, guard) = slog_async::Async::new(drain).build_with_guard();
+        (drain.fuse(), guard)
+    }
+
+    let (drain, guard) = if let Some(path) = path {
+        let file = std::fs::File::create(path).with_context(|| {
+            format!("failed to create logfile {}", path.display())
+        })?;
+        make_drain(level, slog_term::PlainDecorator::new(file))
+    } else {
+        make_drain(level, slog_term::TermDecorator::new().build())
+    };
+
+    Ok((Logger::root(drain, o!("component" => "faux-ipcc")), guard))
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let Some(port_name) = args.port.to_str() else {
+        bail!("could not parse port name from {:?}", args.port);
+    };
+
+    let (log, _guard) =
+        build_logger(args.log_level.into(), args.logfile.as_deref())?;
+    info!(log, "connecting to serial port at `{port_name}`");
+
+    let mut port = serialport::new(port_name, 3_000_000)
         .timeout(Duration::from_millis(100))
         .data_bits(DataBits::Eight)
         .flow_control(FlowControl::Hardware)
@@ -93,9 +160,9 @@ fn main() {
     })
     .unwrap();
 
-    println!("hubpack {} {:x?}", n, &buf[..n]);
+    debug!(log, "hubpack {} {:x?}", n, &buf[..n]);
     let n = corncobs::encode_buf(&buf[..n], &mut corncob_buf);
-    println!("corncob {} {:x?}", n, &corncob_buf[..n]);
+    debug!(log, "corncob {} {:x?}", n, &corncob_buf[..n]);
     port.write_all(&corncob_buf[..n]).unwrap();
     //port.flush().unwrap();
     //port.write(&[0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0]).unwrap();
@@ -107,10 +174,10 @@ fn main() {
     std::thread::sleep(std::time::Duration::from_millis(1000));
 
     loop {
-        println!("n {}", n);
+        trace!(log, "n {}", n);
         port.read_exact(&mut bytes[n..n + 1]).unwrap();
         if bytes[n] == 0 {
-            println!("uh oh {}", n);
+            warn!(log, "uh oh {}", n);
             if n != 0 {
                 break;
             } else {
@@ -127,7 +194,7 @@ fn main() {
 
     //println!("raw {:x?}", bytes);
     let n = corncobs::decode_buf(&bytes[start..], &mut cob_bytes).unwrap();
-    println!("recevied {} {:x?}", n, cob_bytes);
+    info!(log, "received {} {:x?}", n, cob_bytes);
     //let data = attest_data::messages::parse_response(&cob_bytes[..n], RotToHost::RotTqSign).unwrap();
     let (_header, _request, data) =
         deserialize::<SpToHost>(&cob_bytes[..n]).unwrap();
@@ -135,11 +202,8 @@ fn main() {
     let data =
         attest_data::messages::parse_response(data, RotToHost::RotTqSign)
             .unwrap();
-    //println!("{:x?} {:x?} {:x?}", header, request, data);
-    //std::fs::write(args.out, &data).unwrap();
-    //let (header, request, data) = attest_data::messages::deserialize::<RotToHost>(&data).unwrap();
-    //println!("{:x?} {:x?} {:x?}", header, request, data);
-    std::fs::write(args.out, data).unwrap();
+    info!(log, "got data {data:?}");
 
-    println!("done.");
+    info!(log, "done.");
+    Ok(())
 }
