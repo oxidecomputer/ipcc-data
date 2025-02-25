@@ -8,3 +8,4 @@ The format for IPCC messages is laid out in
 [RFD 316](https://rfd.shared.oxide.computer/rfd/0316).
 
 - [`ipcc-data`](ipcc-data): Interpreting data payloads which are opaque to the SP
+- [`libipcc`](libipcc): Calling into the host OS's IPCC library

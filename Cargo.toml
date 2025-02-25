@@ -1,9 +1,11 @@
 [workspace]
 members = [
     "ipcc-data",
+    "libipcc",
 ]
 
 default-members = [
     "ipcc-data",
+    "libipcc",
 ]
 resolver = "2"
