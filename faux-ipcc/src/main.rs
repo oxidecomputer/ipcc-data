@@ -1,10 +1,12 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
-use core::time::Duration;
 use serialport::{DataBits, FlowControl, Parity, StopBits};
-use slog::{debug, info, o, trace, warn, Drain, Level, Logger};
+use slog::{debug, info, o, trace, Drain, Level, Logger};
 use slog_async::AsyncGuard;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use zerocopy::FromBytes;
 
 use attest_data::messages::{HostToRotCommand, RotToHost};
@@ -186,7 +188,9 @@ impl Worker {
         let mut data_size: Option<u64> = None;
         let mut data = vec![];
         let mut last_speed_print = 0;
+        let mut retry_count = 0;
         let start_time = std::time::Instant::now();
+
         while data_size.map_or(true, |s| offset < s) {
             debug!(self.log, "getting image chunk at offset {offset}");
 
@@ -197,14 +201,9 @@ impl Worker {
                 match &r {
                     Ok(..) => break,
                     Err(e) => {
-                        let mut buf = [0u8; 64];
-                        loop {
-                            let r = self.port.read(&mut buf);
-                            if matches!(r, Ok(0) | Err(_)) {
-                                break;
-                            }
-                        }
-                        warn!(self.log, "got error {e:?}")
+                        self.port.clear(serialport::ClearBuffer::All)?;
+                        debug!(self.log, "got error {e:?}");
+                        retry_count += 1;
                     }
                 }
             }
@@ -226,13 +225,15 @@ impl Worker {
                 let speed =
                     data.len() as f64 / start_time.elapsed().as_secs_f64();
                 if let Some(size) = data_size {
-                    let eta_secs = size as f64 / speed;
-                    let eta = std::time::Duration::from_secs_f64(eta_secs);
+                    let eta_secs = (size as f64 - data.len() as f64) / speed;
+                    let eta = Duration::from_secs(eta_secs as u64);
                     info!(
                         self.log,
-                        "{:.2} KiB/sec, ETA {}",
+                        "{mib} / {} MiB, {:.2} KiB/sec, ETA {} ({} retries)",
+                        size / (1024 * 1024),
                         speed / 1024.0,
-                        humantime::format_duration(eta)
+                        humantime::format_duration(eta),
+                        retry_count,
                     );
                 } else {
                     info!(self.log, "{:.2} KiB/sec", speed / 1024.0);
