@@ -93,7 +93,7 @@ fn build_logger(
         make_drain(level, slog_term::TermDecorator::new().build())
     };
 
-    Ok((Logger::root(drain, o!("component" => "faux-ipcc")), guard))
+    Ok((Logger::root(drain, o!()), guard))
 }
 
 fn parse_hash(s: &str) -> Result<[u8; 32]> {
@@ -160,7 +160,7 @@ impl Worker {
         };
         info!(log, "connecting to serial port at `{port_name}`");
         let port = serialport::new(port_name, 3_000_000)
-            .timeout(Duration::from_millis(100))
+            .timeout(Duration::from_millis(200))
             .data_bits(DataBits::Eight)
             .flow_control(FlowControl::None)
             .parity(Parity::None)
@@ -183,11 +183,11 @@ impl Worker {
     fn read_image(&mut self, hash: [u8; 32]) -> Result<Vec<u8>> {
         self.get_status()?;
         let mut offset = 0;
-        let mut image_size: Option<u64> = None;
+        let mut data_size: Option<u64> = None;
         let mut data = vec![];
         let mut last_speed_print = 0;
         let start_time = std::time::Instant::now();
-        while image_size.map_or(true, |s| offset < s) {
+        while data_size.map_or(true, |s| offset < s) {
             debug!(self.log, "getting image chunk at offset {offset}");
 
             let mut r = Err(anyhow!("empty"));
@@ -225,7 +225,7 @@ impl Worker {
                 last_speed_print = mib;
                 let speed =
                     data.len() as f64 / start_time.elapsed().as_secs_f64();
-                if let Some(size) = image_size {
+                if let Some(size) = data_size {
                     let eta_secs = size as f64 / speed;
                     let eta = std::time::Duration::from_secs_f64(eta_secs);
                     info!(
@@ -240,7 +240,7 @@ impl Worker {
             }
 
             // Parse and check the image header to get image size
-            if image_size.is_none()
+            if data_size.is_none()
                 && data.len() >= std::mem::size_of::<BootSpHeader>()
             {
                 let (header, _) = BootSpHeader::ref_from_prefix(&data).unwrap();
@@ -286,9 +286,9 @@ impl Worker {
                     }
                 );
 
-                let size = header.image_size + BootSpHeader::HEADER_SIZE as u64;
+                let size = header.data_size + BootSpHeader::HEADER_SIZE as u64;
                 debug!(self.log, "setting image size to {size}");
-                image_size = Some(size);
+                data_size = Some(size);
             }
         }
         Ok(data)
@@ -327,18 +327,19 @@ impl Worker {
 
         // Read back data
         let mut out = vec![];
-        loop {
-            let mut b = 0u8;
-            self.port
-                .read_exact(std::slice::from_mut(&mut b))
-                .context("failed to read byte")?;
-            if b == 0 {
-                if !out.is_empty() {
+        'outer: loop {
+            let mut chunk = [0u8; 64];
+            let n =
+                self.port.read(&mut chunk).context("failed to read byte")?;
+            for &b in &chunk[..n] {
+                if b == 0 {
+                    if !out.is_empty() {
+                        out.push(b);
+                        break 'outer;
+                    }
+                } else {
                     out.push(b);
-                    break;
                 }
-            } else {
-                out.push(b);
             }
         }
         trace!(self.log, "received {} bytes: {:02x?}", out.len(), out);
