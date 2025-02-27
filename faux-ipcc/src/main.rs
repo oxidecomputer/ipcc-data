@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use core::time::Duration;
 use serialport::{DataBits, FlowControl, Parity, StopBits};
-use slog::{debug, info, o, Drain, Level, Logger};
+use slog::{debug, info, o, trace, warn, Drain, Level, Logger};
 use slog_async::AsyncGuard;
 use std::path::{Path, PathBuf};
 use zerocopy::FromBytes;
@@ -13,14 +13,17 @@ use ipcc_data::BootSpHeader;
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    GetCerts,
-    GetLog,
-    Attest,
-    TqSign,
+    /// Prings the current SP status
+    Status,
+    /// Reads a host phase2 image
     ReadImage {
         #[clap(long, value_parser = parse_hash)]
         hash: [u8; 32],
     },
+    GetCerts,
+    GetLog,
+    Attest,
+    TqSign,
 }
 
 #[derive(Debug, Parser)]
@@ -113,6 +116,7 @@ fn main() -> Result<()> {
 
     let mut worker = Worker::new(&args.port, log)?;
     match args.command {
+        Command::Status => worker.get_status(),
         Command::ReadImage { hash } => {
             let image = worker.read_image(hash)?;
             info!(worker.log, "got {} bytes of image data", image.len());
@@ -158,7 +162,7 @@ impl Worker {
         let port = serialport::new(port_name, 3_000_000)
             .timeout(Duration::from_millis(100))
             .data_bits(DataBits::Eight)
-            .flow_control(FlowControl::Hardware)
+            .flow_control(FlowControl::Software)
             .parity(Parity::None)
             .stop_bits(StopBits::One)
             .open()
@@ -170,6 +174,12 @@ impl Worker {
         })
     }
 
+    fn get_status(&mut self) -> Result<()> {
+        let (reply, _data) = self.send_recv(HostToSp::GetStatus, |_| 0)?;
+        info!(self.log, "got status {reply:?}");
+        Ok(())
+    }
+
     fn read_image(&mut self, hash: [u8; 32]) -> Result<Vec<u8>> {
         let mut offset = 0;
         let mut image_size: Option<u64> = None;
@@ -178,8 +188,25 @@ impl Worker {
         let start_time = std::time::Instant::now();
         while image_size.map_or(true, |s| offset < s) {
             debug!(self.log, "getting image chunk at offset {offset}");
-            let (reply, chunk) = self
-                .send_recv(HostToSp::GetPhase2Data { hash, offset }, |_| 0)?;
+
+            let mut r = Err(anyhow!("empty"));
+            for _ in 0..10 {
+                r = self
+                    .send_recv(HostToSp::GetPhase2Data { hash, offset }, |_| 0);
+                match &r {
+                    Ok(..) => break,
+                    Err(e) => {
+                        warn!(self.log, "got error {e:?}");
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            100,
+                        ));
+                    }
+                }
+            }
+            let Ok((reply, chunk)) = r else {
+                bail!("got too many errors");
+            };
+
             if !matches!(reply, SpToHost::Phase2Data) {
                 bail!("got unexpected reply {reply:?}");
             }
@@ -188,7 +215,7 @@ impl Worker {
             data.extend(chunk);
 
             // Periodically print the transfer speed
-            let mib = data.len() / 1024 * 1024;
+            let mib = data.len() / (1024 * 1024);
             if mib > last_speed_print {
                 last_speed_print = mib;
                 let speed = data.len() as f64
@@ -271,16 +298,17 @@ impl Worker {
         let mut buf = [0; MAX_MESSAGE_SIZE];
         let n = host_sp_messages::serialize(&mut buf, &header, &message, fill)
             .context("serialization failed")?;
-        debug!(self.log, "hubpack {} {:x?}", n, &buf[..n]);
+        trace!(self.log, "hubpack {} {:02x?}", n, &buf[..n]);
 
         // Perform COBS encoding into a second buffer
         let mut corncob_buf = [0; MAX_MESSAGE_SIZE];
         let n = corncobs::encode_buf(&buf[..n], &mut corncob_buf);
-        debug!(self.log, "corncob {} {:x?}", n, &corncob_buf[..n]);
+        trace!(self.log, "corncob {} {:02x?}", n, &corncob_buf[..n]);
 
         self.port
             .write_all(&corncob_buf[..n])
             .context("failed to write message")?;
+        self.port.flush().context("failed to flush")?;
 
         // Read back data
         let mut out = vec![];
@@ -291,16 +319,20 @@ impl Worker {
                 .context("failed to read byte")?;
             if b == 0 {
                 if !out.is_empty() {
+                    out.push(b);
                     break;
                 }
             } else {
                 out.push(b);
             }
         }
+        trace!(self.log, "received {} bytes: {:02x?}", out.len(), out);
 
         let n = corncobs::decode_buf(out.as_slice(), &mut buf)
             .map_err(|e| anyhow!("corncobs error: {e}"))
             .context("failed to decode COBS data")?;
+        trace!(self.log, "decoded {} bytes: {:02x?}", n, &buf[..n]);
+
         let (rx_header, request, data) =
             host_sp_messages::deserialize::<SpToHost>(&buf[..n])
                 .map_err(|e| anyhow!("decode failure: {e:?}"))
