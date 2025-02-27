@@ -19,3 +19,4 @@ attest-data.git = "https://github.com/oxidecomputer/dice-util"
 host-sp-messages.git = "https://github.com/oxidecomputer/hubris"
 
 ipcc-data.path = "../ipcc-data"
+humantime = "2.1.0"

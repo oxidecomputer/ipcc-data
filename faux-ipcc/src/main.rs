@@ -162,7 +162,7 @@ impl Worker {
         let port = serialport::new(port_name, 3_000_000)
             .timeout(Duration::from_millis(100))
             .data_bits(DataBits::Eight)
-            .flow_control(FlowControl::Software)
+            .flow_control(FlowControl::None)
             .parity(Parity::None)
             .stop_bits(StopBits::One)
             .open()
@@ -181,6 +181,7 @@ impl Worker {
     }
 
     fn read_image(&mut self, hash: [u8; 32]) -> Result<Vec<u8>> {
+        self.get_status()?;
         let mut offset = 0;
         let mut image_size: Option<u64> = None;
         let mut data = vec![];
@@ -196,10 +197,14 @@ impl Worker {
                 match &r {
                     Ok(..) => break,
                     Err(e) => {
-                        warn!(self.log, "got error {e:?}");
-                        std::thread::sleep(std::time::Duration::from_millis(
-                            100,
-                        ));
+                        let mut buf = [0u8; 64];
+                        loop {
+                            let r = self.port.read(&mut buf);
+                            if matches!(r, Ok(0) | Err(_)) {
+                                break;
+                            }
+                        }
+                        warn!(self.log, "got error {e:?}")
                     }
                 }
             }
@@ -218,10 +223,20 @@ impl Worker {
             let mib = data.len() / (1024 * 1024);
             if mib > last_speed_print {
                 last_speed_print = mib;
-                let speed = data.len() as f64
-                    / 1024f64.powi(2)
-                    / start_time.elapsed().as_secs_f64();
-                info!(self.log, "{speed} MiB/sec");
+                let speed =
+                    data.len() as f64 / start_time.elapsed().as_secs_f64();
+                if let Some(size) = image_size {
+                    let eta_secs = size as f64 / speed;
+                    let eta = std::time::Duration::from_secs_f64(eta_secs);
+                    info!(
+                        self.log,
+                        "{:.2} KiB/sec, ETA {}",
+                        speed / 1024.0,
+                        humantime::format_duration(eta)
+                    );
+                } else {
+                    info!(self.log, "{:.2} KiB/sec", speed / 1024.0);
+                }
             }
 
             // Parse and check the image header to get image size
