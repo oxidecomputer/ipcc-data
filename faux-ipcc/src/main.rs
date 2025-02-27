@@ -1,13 +1,15 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use core::time::Duration;
 use serialport::{DataBits, FlowControl, Parity, StopBits};
-use slog::{debug, info, o, trace, warn, Drain, Level, Logger};
+use slog::{debug, info, o, Drain, Level, Logger};
 use slog_async::AsyncGuard;
 use std::path::{Path, PathBuf};
+use zerocopy::FromBytes;
 
 use attest_data::messages::{HostToRotCommand, RotToHost};
 use host_sp_messages::{Header, HostToSp, SpToHost, MAGIC, MAX_MESSAGE_SIZE};
+use ipcc_data::BootSpHeader;
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
@@ -111,24 +113,28 @@ fn main() -> Result<()> {
 
     let mut worker = Worker::new(&args.port, log)?;
     match args.command {
-        Command::ReadImage { .. } => {
-            unimplemented!()
+        Command::ReadImage { hash } => {
+            let image = worker.read_image(hash)?;
+            info!(worker.log, "got {} bytes of image data", image.len());
+            Ok(())
         }
+
+        // XXX This is old code and may not be relevant / correct!
         Command::GetCerts => {
-            worker.do_rot_command(HostToRotCommand::GetCertificates, |_| 0)
+            worker.rot_command(HostToRotCommand::GetCertificates, |_| 0)
         }
         Command::GetLog => {
-            worker.do_rot_command(HostToRotCommand::GetMeasurementLog, |_| 0)
+            worker.rot_command(HostToRotCommand::GetMeasurementLog, |_| 0)
         }
         Command::Attest => {
-            worker.do_rot_command(HostToRotCommand::Attest, |buf| {
+            worker.rot_command(HostToRotCommand::Attest, |buf| {
                 let nonce = [0x00; 32];
                 buf.copy_from_slice(&nonce);
                 32
             })
         }
         Command::TqSign => {
-            worker.do_rot_command(HostToRotCommand::TqSign, |buf| {
+            worker.rot_command(HostToRotCommand::TqSign, |buf| {
                 let nonce = [0x00; 32];
                 buf[..nonce.len()].copy_from_slice(&nonce);
                 32
@@ -140,6 +146,7 @@ fn main() -> Result<()> {
 struct Worker {
     log: Logger,
     port: Box<dyn serialport::SerialPort>,
+    sequence: u64,
 }
 
 impl Worker {
@@ -156,81 +163,186 @@ impl Worker {
             .stop_bits(StopBits::One)
             .open()
             .unwrap();
-        Ok(Self { log, port })
+        Ok(Self {
+            log,
+            port,
+            sequence: 1,
+        })
     }
 
-    // XXX this is copy-pasted from old code and may not be relevant / correct!
-    fn do_rot_command<F>(
+    fn read_image(&mut self, hash: [u8; 32]) -> Result<Vec<u8>> {
+        let mut offset = 0;
+        let mut image_size: Option<u64> = None;
+        let mut data = vec![];
+        let mut last_speed_print = 0;
+        let start_time = std::time::Instant::now();
+        while image_size.map_or(true, |s| offset < s) {
+            debug!(self.log, "getting image chunk at offset {offset}");
+            let (reply, chunk) = self
+                .send_recv(HostToSp::GetPhase2Data { hash, offset }, |_| 0)?;
+            if !matches!(reply, SpToHost::Phase2Data) {
+                bail!("got unexpected reply {reply:?}");
+            }
+            debug!(self.log, "got {} bytes at offset {offset}", chunk.len());
+            offset += chunk.len() as u64;
+            data.extend(chunk);
+
+            // Periodically print the transfer speed
+            let mib = data.len() / 1024 * 1024;
+            if mib > last_speed_print {
+                last_speed_print = mib;
+                let speed = data.len() as f64
+                    / 1024f64.powi(2)
+                    / start_time.elapsed().as_secs_f64();
+                info!(self.log, "{speed} MiB/sec");
+            }
+
+            // Parse and check the image header to get image size
+            if image_size.is_none()
+                && data.len() >= std::mem::size_of::<BootSpHeader>()
+            {
+                let (header, _) = BootSpHeader::ref_from_prefix(&data).unwrap();
+                info!(self.log, "got boot header");
+                if header.magic != BootSpHeader::MAGIC {
+                    bail!(
+                        "invalid header magic: expected {:#x}, got {:#x}",
+                        BootSpHeader::MAGIC,
+                        header.magic
+                    );
+                } else if header.version != BootSpHeader::VERSION {
+                    bail!(
+                        "invalid header version: expected {:#x}, got {:#x}",
+                        BootSpHeader::VERSION,
+                        header.version
+                    );
+                }
+                info!(self.log, "  flags:        {:#x}", header.flags);
+                info!(self.log, "  data size:    {:#x}", header.data_size);
+                info!(self.log, "  image size:   {:#x}", header.image_size);
+                info!(self.log, "  target size:  {:#x}", header.target_size);
+                info!(
+                    self.log,
+                    "  sha256:      {}",
+                    hex::encode(header.sha256)
+                );
+                info!(
+                    self.log,
+                    "  dataset name: {}",
+                    if let Ok(s) = std::str::from_utf8(&header.dataset) {
+                        s.to_string()
+                    } else {
+                        format!("{:02x?}", header.dataset)
+                    }
+                );
+                info!(
+                    self.log,
+                    "  image name:   {}",
+                    if let Ok(s) = std::str::from_utf8(&header.imagename) {
+                        s.to_string()
+                    } else {
+                        format!("{:02x?}", header.imagename)
+                    }
+                );
+
+                let size = header.image_size + BootSpHeader::HEADER_SIZE as u64;
+                debug!(self.log, "setting image size to {size}");
+                image_size = Some(size);
+            }
+        }
+        Ok(data)
+    }
+
+    fn send_recv<F>(
         &mut self,
-        msg: HostToRotCommand,
+        message: HostToSp,
         fill: F,
-    ) -> Result<()>
+    ) -> Result<(SpToHost, Vec<u8>)>
     where
         F: FnOnce(&mut [u8]) -> usize,
     {
-        let mut buf = [0; MAX_MESSAGE_SIZE];
-        let mut corncob_buf = [0; MAX_MESSAGE_SIZE];
         let header = Header {
             magic: MAGIC,
             version: 0x1,
-            sequence: 0x1,
+            sequence: self.sequence,
         };
+        self.sequence += 1;
 
-        let message = HostToSp::RotRequest;
+        // Serialize into initial buffer
+        let mut buf = [0; MAX_MESSAGE_SIZE];
+        let n = host_sp_messages::serialize(&mut buf, &header, &message, fill)
+            .context("serialization failed")?;
+        debug!(self.log, "hubpack {} {:x?}", n, &buf[..n]);
+
+        // Perform COBS encoding into a second buffer
+        let mut corncob_buf = [0; MAX_MESSAGE_SIZE];
+        let n = corncobs::encode_buf(&buf[..n], &mut corncob_buf);
+        debug!(self.log, "corncob {} {:x?}", n, &corncob_buf[..n]);
+
+        self.port
+            .write_all(&corncob_buf[..n])
+            .context("failed to write message")?;
+
+        // Read back data
+        let mut out = vec![];
+        loop {
+            let mut b = 0u8;
+            self.port
+                .read_exact(std::slice::from_mut(&mut b))
+                .context("failed to read byte")?;
+            if b == 0 {
+                if !out.is_empty() {
+                    break;
+                }
+            } else {
+                out.push(b);
+            }
+        }
+
+        let n = corncobs::decode_buf(out.as_slice(), &mut buf)
+            .map_err(|e| anyhow!("corncobs error: {e}"))
+            .context("failed to decode COBS data")?;
+        let (rx_header, request, data) =
+            host_sp_messages::deserialize::<SpToHost>(&buf[..n])
+                .map_err(|e| anyhow!("decode failure: {e:?}"))
+                .context("failed to deserialize")?;
+        if rx_header.magic != header.magic {
+            bail!(
+                "bad MAGIC in received header: expected {:#x}, got {:#x}",
+                header.magic,
+                rx_header.magic
+            );
+        } else if rx_header.version != header.version {
+            bail!(
+                "bad version in received header: expected {}, got {}",
+                header.version,
+                rx_header.version
+            );
+        } else if rx_header.sequence != header.sequence | (1 << 63) {
+            bail!(
+                "bad sequence in received header: expected {:#x}, got {:#x}",
+                header.sequence | (1 << 63),
+                rx_header.version
+            );
+        }
+        Ok((request, data.to_owned()))
+    }
+
+    // XXX this is copy-pasted from old code and may not be relevant / correct!
+    fn rot_command<F>(&mut self, msg: HostToRotCommand, fill: F) -> Result<()>
+    where
+        F: FnOnce(&mut [u8]) -> usize,
+    {
         let mut rot_message = vec![0; 12 + 32];
         let message_len =
             attest_data::messages::serialize(&mut rot_message, &msg, fill)?;
 
-        let n =
-            host_sp_messages::serialize(&mut buf, &header, &message, |buf| {
-                buf[..message_len].copy_from_slice(&rot_message[..message_len]);
-                message_len
-            })
-            .unwrap();
-
-        debug!(self.log, "hubpack {} {:x?}", n, &buf[..n]);
-        let n = corncobs::encode_buf(&buf[..n], &mut corncob_buf);
-        debug!(self.log, "corncob {} {:x?}", n, &corncob_buf[..n]);
-        self.port.write_all(&corncob_buf[..n]).unwrap();
-        //port.flush().unwrap();
-        //port.write(&[0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0]).unwrap();
-        //port.flush().unwrap();
-
-        let mut bytes = [0; 2048];
-        let mut cob_bytes: [u8; 2048] = [0; 2048];
-        let mut n = 0;
-        std::thread::sleep(std::time::Duration::from_millis(1000));
-
-        loop {
-            trace!(self.log, "n {}", n);
-            self.port
-                .read_exact(&mut bytes[n..n + 1])
-                .context("failed to read back data")?;
-            if bytes[n] == 0 {
-                warn!(self.log, "uh oh {}", n);
-                if n != 0 {
-                    break;
-                } else {
-                    continue;
-                }
-            }
-            n += 1;
-            if n == 2046 {
-                break;
-            }
-        }
-
-        let start = bytes.iter().position(|&x| x != 0).unwrap();
-
-        //println!("raw {:x?}", bytes);
-        let n = corncobs::decode_buf(&bytes[start..], &mut cob_bytes).unwrap();
-        info!(self.log, "received {} {:x?}", n, cob_bytes);
-        //let data = attest_data::messages::parse_response(&cob_bytes[..n], RotToHost::RotTqSign).unwrap();
-        let (_header, _request, data) =
-            host_sp_messages::deserialize::<SpToHost>(&cob_bytes[..n]).unwrap();
+        let (_request, data) = self.send_recv(HostToSp::RotRequest, |buf| {
+            buf[..message_len].copy_from_slice(&rot_message[..message_len]);
+            message_len
+        })?;
 
         let data =
-            attest_data::messages::parse_response(data, RotToHost::RotTqSign)
+            attest_data::messages::parse_response(&data, RotToHost::RotTqSign)
                 .unwrap();
         info!(self.log, "got data {data:?}");
 

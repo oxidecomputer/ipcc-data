@@ -11,7 +11,7 @@ dependencies = [
  "byteorder",
  "phash",
  "serde",
- "zerocopy",
+ "zerocopy 0.6.6",
 ]
 
 [[package]]
@@ -468,10 +468,12 @@ dependencies = [
  "corncobs",
  "hex",
  "host-sp-messages",
+ "ipcc-data",
  "serialport",
  "slog",
  "slog-async",
  "slog-term",
+ "zerocopy 0.8.20",
 ]
 
 [[package]]
@@ -500,7 +502,7 @@ dependencies = [
  "static_assertions",
  "strum_macros",
  "uuid",
- "zerocopy",
+ "zerocopy 0.6.6",
 ]
 
 [[package]]
@@ -601,7 +603,7 @@ dependencies = [
  "serde_repr",
  "static_assertions",
  "unwrap-lite",
- "zerocopy",
+ "zerocopy 0.6.6",
 ]
 
 [[package]]
@@ -670,6 +672,7 @@ dependencies = [
  "binrw",
  "derive_more",
  "indexmap 2.7.1",
+ "zerocopy 0.8.20",
 ]
 
 [[package]]
@@ -727,6 +730,26 @@ checksum = "c0ff37bd590ca25063e35af745c343cb7a0271906fb7b37e4813e8f79f00268d"
 dependencies = [
  "bitflags 2.8.0",
  "libc",
+]
+
+[[package]]
+name = "libudev"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78b324152da65df7bb95acfcaab55e3097ceaab02fb19b228a9eb74d55f135e0"
+dependencies = [
+ "libc",
+ "libudev-sys",
+]
+
+[[package]]
+name = "libudev-sys"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c8469b4a23b962c1396b9b451dda50ef5b283e8dd309d69033475fa9b334324"
+dependencies = [
+ "libc",
+ "pkg-config",
 ]
 
 [[package]]
@@ -825,13 +848,19 @@ source = "git+https://github.com/oxidecomputer/hubris#f3d51548b98fa4728d68fb3059
 dependencies = [
  "hubpack",
  "serde",
- "zerocopy",
+ "zerocopy 0.6.6",
 ]
 
 [[package]]
 name = "phash"
 version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/hubris#f3d51548b98fa4728d68fb3059137092c4de7ccb"
+
+[[package]]
+name = "pkg-config"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "953ec861398dccce10c670dfeaf3ec4911ca479e9c02154b3a215178c5f566f2"
 
 [[package]]
 name = "powerfmt"
@@ -1015,6 +1044,7 @@ dependencies = [
  "core-foundation",
  "core-foundation-sys",
  "io-kit-sys",
+ "libudev",
  "mach2",
  "nix",
  "scopeguard",
@@ -1428,7 +1458,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "854e949ac82d619ee9a14c66a1b674ac730422372ccb759ce0c39cabcf2bf8e6"
 dependencies = [
  "byteorder",
- "zerocopy-derive",
+ "zerocopy-derive 0.6.6",
+]
+
+[[package]]
+name = "zerocopy"
+version = "0.8.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dde3bb8c68a8f3f1ed4ac9221aad6b10cece3e60a8e2ea54a6a2dec806d0084c"
+dependencies = [
+ "zerocopy-derive 0.8.20",
 ]
 
 [[package]]
@@ -1436,6 +1475,17 @@ name = "zerocopy-derive"
 version = "0.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "125139de3f6b9d625c39e2efdd73d41bdac468ccd556556440e322be0e1bbd91"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.98",
+]
+
+[[package]]
+name = "zerocopy-derive"
+version = "0.8.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eea57037071898bf96a6da35fd626f4f27e9cee3ead2a6c703cf09d472b2e700"
 dependencies = [
  "proc-macro2",
  "quote",
