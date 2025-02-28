@@ -139,26 +139,34 @@ fn main() -> Result<()> {
         }
 
         // XXX This is old code and may not be relevant / correct!
-        Command::GetCerts => {
-            worker.rot_command(HostToRotCommand::GetCertificates, |_| 0)
-        }
-        Command::GetLog => {
-            worker.rot_command(HostToRotCommand::GetMeasurementLog, |_| 0)
-        }
-        Command::Attest => {
-            worker.rot_command(HostToRotCommand::Attest, |buf| {
+        Command::GetCerts => worker.rot_command(
+            HostToRotCommand::GetCertificates,
+            RotToHost::RotCertificates,
+            |_| 0,
+        ),
+        Command::GetLog => worker.rot_command(
+            HostToRotCommand::GetMeasurementLog,
+            RotToHost::RotMeasurementLog,
+            |_| 0,
+        ),
+        Command::Attest => worker.rot_command(
+            HostToRotCommand::Attest,
+            RotToHost::RotAttestation,
+            |buf| {
                 let nonce = [0x00; 32];
                 buf.copy_from_slice(&nonce);
                 32
-            })
-        }
-        Command::TqSign => {
-            worker.rot_command(HostToRotCommand::TqSign, |buf| {
+            },
+        ),
+        Command::TqSign => worker.rot_command(
+            HostToRotCommand::TqSign,
+            RotToHost::RotTqSign,
+            |buf| {
                 let nonce = [0x00; 32];
                 buf[..nonce.len()].copy_from_slice(&nonce);
                 32
-            })
-        }
+            },
+        ),
     }
 }
 
@@ -390,7 +398,12 @@ impl Worker {
     }
 
     // XXX this is copy-pasted from old code and may not be relevant / correct!
-    fn rot_command<F>(&mut self, msg: HostToRotCommand, fill: F) -> Result<()>
+    fn rot_command<F>(
+        &mut self,
+        msg: HostToRotCommand,
+        expected: RotToHost,
+        fill: F,
+    ) -> Result<()>
     where
         F: FnOnce(&mut [u8]) -> usize,
     {
@@ -404,8 +417,7 @@ impl Worker {
         })?;
 
         let data =
-            attest_data::messages::parse_response(&data, RotToHost::RotTqSign)
-                .unwrap();
+            attest_data::messages::parse_response(&data, expected).unwrap();
         info!(self.log, "got data {data:?}");
 
         info!(self.log, "done.");
