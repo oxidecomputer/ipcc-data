@@ -43,6 +43,10 @@ struct Args {
     #[clap(long)]
     logfile: Option<PathBuf>,
 
+    /// Tweak FTDI timeouts for faster communication
+    #[clap(long)]
+    ftdi_tweak: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -115,6 +119,15 @@ fn main() -> Result<()> {
 
     let (log, _guard) =
         build_logger(args.log_level.into(), args.logfile.as_deref())?;
+
+    if args.ftdi_tweak {
+        let mut device = ftdi::find_by_vid_pid(0x0403, 0x6001)
+            .interface(ftdi::Interface::A)
+            .open()?;
+        let prev = device.latency_timer()?;
+        device.set_latency_timer(1)?;
+        info!(log, "set latency timer {prev} -> 1");
+    }
 
     let mut worker = Worker::new(&args.port, log)?;
     match args.command {
