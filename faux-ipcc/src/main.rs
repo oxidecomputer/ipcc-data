@@ -24,8 +24,6 @@ pub enum Command {
     },
     GetCerts,
     GetLog,
-    Attest,
-    TqSign,
 }
 
 #[derive(Debug, Parser)]
@@ -129,44 +127,53 @@ fn main() -> Result<()> {
         info!(log, "set latency timer {prev} -> 1");
     }
 
-    let mut worker = Worker::new(&args.port, log)?;
+    let mut worker = Worker::new(&args.port, log.clone())?;
     match args.command {
         Command::Status => worker.get_status(),
         Command::ReadImage { hash } => {
             let image = worker.read_image(hash)?;
-            info!(worker.log, "got {} bytes of image data", image.len());
+            info!(log, "got {} bytes of image data", image.len());
             Ok(())
         }
 
-        // XXX This is old code and may not be relevant / correct!
-        Command::GetCerts => worker.rot_command(
-            HostToRotCommand::GetCertificates,
-            RotToHost::RotCertificates,
-            |_| 0,
-        ),
-        Command::GetLog => worker.rot_command(
-            HostToRotCommand::GetMeasurementLog,
-            RotToHost::RotMeasurementLog,
-            |_| 0,
-        ),
-        Command::Attest => worker.rot_command(
-            HostToRotCommand::Attest,
-            RotToHost::RotAttestation,
-            |buf| {
-                let nonce = [0x00; 32];
-                buf.copy_from_slice(&nonce);
-                32
-            },
-        ),
-        Command::TqSign => worker.rot_command(
-            HostToRotCommand::TqSign,
-            RotToHost::RotTqSign,
-            |buf| {
-                let nonce = [0x00; 32];
-                buf[..nonce.len()].copy_from_slice(&nonce);
-                32
-            },
-        ),
+        Command::GetCerts => {
+            let cert_chain_bytes = worker.rot_command(
+                HostToRotCommand::GetCertificates,
+                RotToHost::RotCertificates,
+                |_| 0,
+            )?;
+            use x509_cert::{
+                der::{self, Decode, Encode, Reader},
+                Certificate,
+            };
+            // Incrementally parse the chain of DER-encoded certificates
+            let mut cert_chain_bytes = cert_chain_bytes.as_slice();
+            while !cert_chain_bytes.is_empty() {
+                let reader = der::SliceReader::new(cert_chain_bytes)?;
+                let header = reader.peek_header()?;
+
+                // Total len = length from the sequence plus the tag itself
+                let seq_len: usize = header.length.try_into()?;
+                let tag_len: usize = header.encoded_len()?.try_into()?;
+                let end = seq_len + tag_len;
+                let (cert, rest) = cert_chain_bytes.split_at(end);
+
+                let cert = Certificate::from_der(cert)?;
+                info!(log, "Certificate => {}", cert.tbs_certificate.subject);
+                debug!(log, "Full certificate => {cert:?}");
+                cert_chain_bytes = rest;
+            }
+            Ok(())
+        }
+        Command::GetLog => {
+            let measurement_log = worker.rot_command(
+                HostToRotCommand::GetMeasurementLog,
+                RotToHost::RotMeasurementLog,
+                |_| 0,
+            )?;
+            info!(log, "got log {measurement_log:02x?}");
+            Ok(())
+        }
     }
 }
 
@@ -403,10 +410,14 @@ impl Worker {
         msg: HostToRotCommand,
         expected: RotToHost,
         fill: F,
-    ) -> Result<()>
+    ) -> Result<Vec<u8>>
     where
         F: FnOnce(&mut [u8]) -> usize,
     {
+        debug!(
+            self.log,
+            "sending RoT message {msg:?}, expecting {expected:?}"
+        );
         let mut rot_message = vec![0; 12 + 32];
         let message_len =
             attest_data::messages::serialize(&mut rot_message, &msg, fill)?;
@@ -416,11 +427,14 @@ impl Worker {
             message_len
         })?;
 
-        let data =
-            attest_data::messages::parse_response(&data, expected).unwrap();
-        info!(self.log, "got data {data:?}");
+        let data = attest_data::messages::parse_response(&data, expected)
+            .map_err(|e| anyhow!("parse error: {e:?}"))
+            .with_context(|| {
+                format!("invalid message type (expected {expected:?})")
+            })?;
+        trace!(self.log, "got data {data:?}");
 
-        info!(self.log, "done.");
-        Ok(())
+        debug!(self.log, "done.");
+        Ok(data.to_owned())
     }
 }

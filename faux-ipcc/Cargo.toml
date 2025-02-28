@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+attest-data.git = "https://github.com/oxidecomputer/dice-util"
+host-sp-messages.git = "https://github.com/oxidecomputer/hubris"
+
+ipcc-data.path = "../ipcc-data"
+
 anyhow = "1.0.96"
 clap = { version = "4.5.31", features = ["derive", "env"] }
 corncobs = "0.1.3"
@@ -14,9 +19,5 @@ ftdi = "0.1.3"
 slog-async = "2.8.0"
 slog-term = "2.9.1"
 zerocopy = "0.8.20"
-
-attest-data.git = "https://github.com/oxidecomputer/dice-util"
-host-sp-messages.git = "https://github.com/oxidecomputer/hubris"
-
-ipcc-data.path = "../ipcc-data"
 humantime = "2.1.0"
+x509-cert = "0.2.5"
