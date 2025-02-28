@@ -652,3 +652,38 @@ impl PanicData {
         }
     }
 }
+
+/// Image boot header
+///
+/// See `oxide_boot_sp.h` for the equivalent C definition
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+    zerocopy::Immutable,
+)]
+#[repr(C)]
+pub struct BootSpHeader {
+    pub magic: u32,
+    pub version: u32,
+
+    pub flags: u64,
+    pub data_size: u64,
+    pub image_size: u64,
+    pub target_size: u64,
+
+    pub sha256: [u8; 32],
+
+    pub dataset: [u8; 128],
+    pub imagename: [u8; 128],
+}
+
+impl BootSpHeader {
+    pub const MAGIC: u32 = 0x1DEB0075;
+    pub const VERSION: u32 = 2;
+    pub const HEADER_SIZE: usize = 0x1000;
+    pub const FLAG_COMPRESSED: u32 = 0x1;
+}

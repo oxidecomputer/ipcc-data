@@ -2,10 +2,12 @@
 members = [
     "ipcc-data",
     "libipcc",
+    "faux-ipcc",
 ]
 
 default-members = [
     "ipcc-data",
     "libipcc",
+    "faux-ipcc",
 ]
 resolver = "2"
