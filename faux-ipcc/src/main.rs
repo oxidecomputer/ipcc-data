@@ -22,7 +22,9 @@ pub enum Command {
         #[clap(long, value_parser = parse_hash)]
         hash: [u8; 32],
     },
+    /// Prints the certificate chain from the RoT
     GetCerts,
+    /// Prints the measurement log from the RoT
     GetLog,
 }
 
@@ -298,7 +300,7 @@ impl Worker {
                 info!(self.log, "  target size:  {:#x}", header.target_size);
                 info!(
                     self.log,
-                    "  sha256:      {}",
+                    "  sha256:       {}",
                     hex::encode(header.sha256)
                 );
                 info!(
