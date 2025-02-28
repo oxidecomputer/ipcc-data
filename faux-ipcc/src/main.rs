@@ -222,14 +222,19 @@ impl Worker {
         while data_size.map_or(true, |s| offset < s) {
             debug!(self.log, "getting image chunk at offset {offset}");
 
-            let mut r = Err(anyhow!("empty"));
-            for _ in 0..10 {
+            let mut r = Err(anyhow!("")); // initialize to a dummy value
+            const RETRY_COUNT: usize = 10;
+            for i in 0..RETRY_COUNT {
                 r = self
                     .send_recv(HostToSp::GetPhase2Data { hash, offset }, |_| 0);
                 match &r {
                     Ok(..) => break,
                     Err(e) => {
                         self.port.clear(serialport::ClearBuffer::All)?;
+                        if i > RETRY_COUNT {
+                            // Add delays if fast retries have failed
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
                         debug!(self.log, "got error {e:?}");
                         retry_count += 1;
                     }
