@@ -9,7 +9,10 @@ use std::{
 };
 use zerocopy::FromBytes;
 
-use attest_data::messages::{HostToRotCommand, RotToHost};
+use attest_data::{
+    messages::{HostToRotCommand, RotToHost},
+    Log,
+};
 use host_sp_messages::{Header, HostToSp, SpToHost, MAGIC, MAX_MESSAGE_SIZE};
 use ipcc_data::BootSpHeader;
 
@@ -173,7 +176,17 @@ fn main() -> Result<()> {
                 RotToHost::RotMeasurementLog,
                 |_| 0,
             )?;
-            info!(log, "got log {measurement_log:02x?}");
+            debug!(log, "got raw log {measurement_log:02x?}");
+            let (m, _rest): (Log, _) = hubpack::deserialize(&measurement_log)?;
+            info!(
+                log,
+                "got measurement log with {} entr{}",
+                m.len(),
+                if m.len() > 1 { "ies" } else { "y" }
+            );
+            for i in 0..m.len() {
+                info!(log, "  {i}: {:?}", m[i]);
+            }
             Ok(())
         }
     }

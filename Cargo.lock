@@ -96,7 +96,7 @@ dependencies = [
 [[package]]
 name = "attest-data"
 version = "0.4.0"
-source = "git+https://github.com/oxidecomputer/dice-util#a20766967f779a4bad6922d2b62593c21b384a28"
+source = "git+https://github.com/oxidecomputer/dice-util#f1ccb0ef6612e69ca762e454ad54eafd04c15532"
 dependencies = [
  "hubpack",
  "salty",
@@ -505,6 +505,7 @@ dependencies = [
  "ftdi",
  "hex",
  "host-sp-messages",
+ "hubpack",
  "humantime",
  "ipcc-data",
  "serialport",
