@@ -9,3 +9,4 @@ The format for IPCC messages is laid out in
 
 - [`ipcc-data`](ipcc-data): Interpreting data payloads which are opaque to the SP
 - [`libipcc`](libipcc): Calling into the host OS's IPCC library
+- [`faux-ipcc`](faux-ipcc): A CLI tool for working with IPCC on a desktop
