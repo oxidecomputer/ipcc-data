@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serialport::{DataBits, FlowControl, Parity, StopBits};
@@ -424,7 +428,6 @@ impl Worker {
         Ok((request, data.to_owned()))
     }
 
-    // XXX this is copy-pasted from old code and may not be relevant / correct!
     fn rot_command<F>(
         &mut self,
         msg: HostToRotCommand,
